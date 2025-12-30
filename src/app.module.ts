@@ -10,6 +10,7 @@ import { UserModule } from './user/user.module';
 import { UploadModule } from './upload/upload.module';
 import { HistoryModule } from './history/history.module';
 import { TypeOrmConfigService } from './config/typeorm.config';
+import { Upload } from './entities/upload.entity';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { TypeOrmConfigService } from './config/typeorm.config';
     }),
 
     // 엔티티 단위 등록 (선택적, UserModule에서 별도로 관리 가능)
-    TypeOrmModule.forFeature([User, History]),
+    TypeOrmModule.forFeature([User, History, Upload]),
 
     // 다른 모듈
     AuthModule,

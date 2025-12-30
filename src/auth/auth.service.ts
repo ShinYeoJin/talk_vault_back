@@ -1,53 +1,47 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  ConflictException,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, ConflictException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { User } from '../entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
-import { SignupDto } from './dto/signup.dto';
 import { supabase } from '@/common/supabase/supabase.client';
 
 @Injectable()
 export class AuthService {
   constructor(
     @InjectRepository(User)
-    private userRepository: Repository<User>,
-    private jwtService: JwtService,
-    private configService: ConfigService,
+    private readonly userRepository: Repository<User>,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
-  async register(registerDto: RegisterDto) {
-    const existingUser = await this.userRepository.findOne({
-      where: { email: registerDto.email },
-    });
+  async signup(dto: RegisterDto, file?: any) {
+    const existingUser = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingUser) throw new ConflictException('Email already exists');
 
-    if (existingUser) {
-      throw new ConflictException('Email already exists');
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    let profileImageUrl: string | null = null;
+    if (file) {
+      profileImageUrl = await this.uploadProfileImage(file);
     }
 
-    const hashedPassword = await bcrypt.hash(registerDto.password, 10);
-
     const user = this.userRepository.create({
-      email: registerDto.email,
+      email: dto.email,
       password: hashedPassword,
-      profileImageUrl: null,
+      profileImageUrl,
     });
 
     await this.userRepository.save(user);
 
-    const tokens = await this.generateTokens(user.id, user.email);
-    await this.updateRefreshToken(user.id, tokens.refreshToken);
+    const { accessToken, refreshToken } = await this.generateTokens(user.id, user.email);
+    await this.updateRefreshToken(user.id, refreshToken);
 
     return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      accessToken,
+      refreshToken,
       user: {
         id: user.id,
         email: user.email,
@@ -56,71 +50,39 @@ export class AuthService {
     };
   }
 
-  async signup(dto: SignupDto, file?: any) {
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
-  
-    let profileImageUrl: string | null = null;
-  
-    if (file) {
-      profileImageUrl = await this.uploadProfileImage(file);
-    }
-  
-    const user = this.userRepository.create({
-      email: dto.email,
-      password: hashedPassword,
-      profileImageUrl,
-    });
-  
-    await this.userRepository.save(user);
-  
-    return { message: 'Signup successful', user: { email: user.email, profileImageUrl: user.profileImageUrl } };
-  }
-  
-
-  private async uploadProfileImage(file: any) {
+  private async uploadProfileImage(file: any): Promise<string> {
     const fileExt = file.originalname.split('.').pop();
     const fileName = `profile_${Date.now()}.${fileExt}`;
-  
+
     const { data, error } = await supabase.storage
       .from(process.env.SUPABASE_PROFILE_BUCKET!)
       .upload(fileName, file.buffer, {
         contentType: file.mimetype,
         upsert: false,
       });
-  
+
     if (error) throw error;
-  
-    const { data: publicUrl } = supabase.storage
+
+    const { data: publicUrlData } = supabase.storage
       .from(process.env.SUPABASE_PROFILE_BUCKET!)
       .getPublicUrl(fileName);
-  
-    return publicUrl.publicUrl;
+
+    return publicUrlData.publicUrl;
   }
 
-  async login(loginDto: LoginDto) {
-    const user = await this.userRepository.findOne({
-      where: { email: loginDto.email },
-    });
+  async login(dto: RegisterDto) {
+    const user = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (!user) throw new UnauthorizedException('Invalid credentials');
 
-    if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
+    const isPasswordValid = await bcrypt.compare(dto.password, user.password);
+    if (!isPasswordValid) throw new UnauthorizedException('Invalid credentials');
 
-    const isPasswordValid = await bcrypt.compare(
-      loginDto.password,
-      user.password,
-    );
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    const tokens = await this.generateTokens(user.id, user.email);
-    await this.updateRefreshToken(user.id, tokens.refreshToken);
+    const { accessToken, refreshToken } = await this.generateTokens(user.id, user.email);
+    await this.updateRefreshToken(user.id, refreshToken);
 
     return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      accessToken,
+      refreshToken,
       user: {
         id: user.id,
         email: user.email,
@@ -129,45 +91,20 @@ export class AuthService {
     };
   }
 
-  async refresh(userId: string) {
-    const user = await this.userRepository.findOne({ where: { id: userId } });
-
-    if (!user || !user.refreshToken) {
-      throw new UnauthorizedException();
-    }
-
-    const tokens = await this.generateTokens(user.id, user.email);
-    await this.updateRefreshToken(user.id, tokens.refreshToken);
-
-    return {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
-  }
-
-  async logout(userId: string) {
-    await this.userRepository.update(userId, { refreshToken: null });
-  }
-
   private async generateTokens(userId: string, email: string) {
     const payload = { sub: userId, email };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(payload, {
-        secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN'),
-      }),
-      this.jwtService.signAsync(payload, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN'),
-      }),
-    ]);
-
+    const accessToken = await this.jwtService.signAsync(payload, {
+      secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
+      expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN'),
+    });
+    const refreshToken = await this.jwtService.signAsync(payload, {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN'),
+    });
     return { accessToken, refreshToken };
   }
 
   private async updateRefreshToken(userId: string, refreshToken: string) {
-    await this.userRepository.update(userId, { refreshToken: refreshToken });
+    await this.userRepository.update(userId, { refreshToken });
   }
 }
-
