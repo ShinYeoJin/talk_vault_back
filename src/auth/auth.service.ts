@@ -6,6 +6,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { User } from '../entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
+import { LoginDto } from './dto/login.dto';
 import { supabase } from '@/common/supabase/supabase.client';
 
 @Injectable()
@@ -70,7 +71,7 @@ export class AuthService {
     return publicUrlData.publicUrl;
   }
 
-  async login(dto: RegisterDto) {
+  async login(dto: LoginDto) {
     const user = await this.userRepository.findOne({ where: { email: dto.email } });
     if (!user) throw new UnauthorizedException('Invalid credentials');
 
@@ -102,6 +103,25 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN'),
     });
     return { accessToken, refreshToken };
+  }
+
+  async refresh(userId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user || !user.refreshToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const { accessToken, refreshToken } = await this.generateTokens(user.id, user.email);
+    await this.updateRefreshToken(user.id, refreshToken);
+
+    return {
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  async logout(userId: string) {
+    await this.userRepository.update(userId, { refreshToken: null });
   }
 
   private async updateRefreshToken(userId: string, refreshToken: string) {
