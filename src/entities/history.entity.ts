@@ -19,7 +19,6 @@ export class History {
   @Column()
   savedFileName: string;
 
-
   @Column({ nullable: true })
   pdfUrl: string;
 

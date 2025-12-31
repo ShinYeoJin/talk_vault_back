@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { History } from '../entities/history.entity';
 import { createClient } from '@supabase/supabase-js';
-import PDFDocument from 'pdfkit';
+import * as PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { v4 as uuid } from 'uuid';
 
