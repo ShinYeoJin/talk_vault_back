@@ -31,10 +31,12 @@ export class AuthController {
   ) {
     const result = await this.authService.signup(dto, file);
 
+    // Cross-origin 쿠키 설정: 프로덕션에서는 sameSite: 'none', secure: true 필수
+    const isProduction = process.env.NODE_ENV === 'production';
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true, // 프로덕션에서는 HTTPS 필수
+      sameSite:'none', // cross-origin 요청을 위해 'none' 사용
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -49,10 +51,12 @@ export class AuthController {
   ) {
     const result = await this.authService.login(dto);
 
+    // Cross-origin 쿠키 설정: 프로덕션에서는 sameSite: 'none', secure: true 필수
+    const isProduction = process.env.NODE_ENV === 'production';
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true, // 프로덕션에서는 HTTPS 필수
+      sameSite: 'none', // cross-origin 요청을 위해 'none' 사용
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -72,10 +76,12 @@ export class AuthController {
     const userId = (req.user as any).userId;
     const result = await this.authService.refresh(userId);
 
+    // Cross-origin 쿠키 설정: 프로덕션에서는 sameSite: 'none', secure: true 필수
+    const isProduction = process.env.NODE_ENV === 'production';
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true, // 프로덕션에서는 HTTPS 필수
+      sameSite:'none', // cross-origin 요청을 위해 'none' 사용
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -94,7 +100,13 @@ export class AuthController {
     const userId = (req.user as any).userId;
     await this.authService.logout(userId);
 
-    res.clearCookie('refreshToken');
+    // 쿠키 삭제 시에도 동일한 옵션 적용 필요
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: true,
+      sameSite:'none',
+    });
 
     return { message: 'Logged out successfully' };
   }
