@@ -33,7 +33,7 @@ export class HistoryController {
   ) {
     const history = await this.historyService.findOneById(id);
 
-    const filePath = history.pdfPath ?? history.excelPath;
+    const filePath = history.pdfUrl ?? history.excelUrl;
 
     if (!filePath || !fs.existsSync(filePath)) {
       throw new NotFoundException('File not found');

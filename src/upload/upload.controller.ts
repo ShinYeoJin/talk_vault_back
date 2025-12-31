@@ -37,7 +37,7 @@ export class UploadController {
       console.error('UPLOAD ERROR: file is undefined');
       throw new BadRequestException('File is required');
     }
-    
+
     const userId = req.user.userId;
 
     const history = await this.uploadService.processFile(file, userId);
@@ -46,8 +46,8 @@ export class UploadController {
       id: history.id,
       originalFileName: history.originalFileName,
       savedFileName: history.savedFileName,
-      pdfPath: history.pdfPath,
-      excelPath: history.excelPath,
+      pdfUrl: history.pdfUrl,
+      excelUrl: history.excelUrl,
       fileSize: history.fileSize,
       createdAt: history.createdAt,
     };
