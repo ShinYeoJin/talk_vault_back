@@ -23,9 +23,21 @@ export class UploadController {
     @UploadedFile() file: any,
     @Req() req: any,
   ) {
+     /**
+     * 🔍 프론트 요청 대응용 로그
+     * - Render Logs에서 file 메타 확인 가능
+     */
+     console.log('UPLOAD FILE META:', {
+      originalname: file?.originalname,
+      mimetype: file?.mimetype,
+      size: file?.size,
+    });
+
     if (!file) {
+      console.error('UPLOAD ERROR: file is undefined');
       throw new BadRequestException('File is required');
     }
+    
     const userId = req.user.userId;
 
     const history = await this.uploadService.processFile(file, userId);

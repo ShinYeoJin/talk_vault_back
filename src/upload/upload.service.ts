@@ -1,11 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { History } from '../entities/history.entity';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import PDFDocument from 'pdfkit';
+import * as PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 
 @Injectable()
@@ -25,10 +25,7 @@ export class UploadService {
     await fs.mkdir(this.excelDir, { recursive: true });
   }
 
-  async processFile(
-    file: any,
-    userId: string,
-  ): Promise<History> {
+  async processFile(file: any, userId: string): Promise<History> {
     await this.ensureDirectoriesExist();
 
     const parsedData = this.parseKakaoTalkTxt(
@@ -40,8 +37,18 @@ export class UploadService {
 
     await fs.writeFile(filePath, file.buffer);
 
-    const pdfPath = await this.generatePDF(parsedData, savedFileName);
-    const excelPath = await this.generateExcel(parsedData, savedFileName);
+    let pdfPath: string;
+    let excelPath: string;
+
+    try {
+      pdfPath = await this.generatePDF(parsedData, savedFileName);
+      excelPath = await this.generateExcel(parsedData, savedFileName);
+    } catch (error) {
+      console.error('FILE CONVERSION ERROR:', error);
+      throw new InternalServerErrorException(
+        '파일 변환 중 오류가 발생했습니다.',
+      );
+    }
 
     const history = this.historyRepository.create({
       originalFileName: file.originalname,
@@ -109,39 +116,45 @@ export class UploadService {
     return messages;
   }
 
-  private async generatePDF(messages: any[], baseName: string) {
+  private async generatePDF(messages: any[], baseName: string): Promise<string> {
     const pdfPath = path.join(
       this.pdfDir,
       `${path.parse(baseName).name}.pdf`,
     );
 
-    const doc = new PDFDocument();
-    const stream = fsSync.createWriteStream(pdfPath);
+    return new Promise<string>((resolve, reject) => {
+      try {
+        const doc = new PDFDocument();
+        const stream = fsSync.createWriteStream(pdfPath);
 
-    doc.pipe(stream);
+        doc.pipe(stream);
 
-    doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
-    doc.moveDown();
+        doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
+        doc.moveDown();
 
-    for (const msg of messages) {
-      doc.fontSize(10).fillColor('gray').text(msg.date);
-      doc.fontSize(12).fillColor('black').text(
-        `${msg.sender}: ${msg.message}`,
-      );
-      doc.moveDown();
-    }
+        for (const msg of messages) {
+          doc.fontSize(10).fillColor('gray').text(msg.date);
+          doc
+            .fontSize(12)
+            .fillColor('black')
+            .text(`${msg.sender}: ${msg.message}`);
+          doc.moveDown();
+        }
 
-    doc.end();
+        doc.end();
 
-    await new Promise<void>((resolve, reject) => {
-      stream.on('finish', () => resolve());
-      stream.on('error', reject);
+        stream.on('finish', () => resolve(pdfPath));
+        stream.on('error', (err) => reject(err));
+      } catch (err) {
+        reject(err);
+      }
     });
-
-    return pdfPath;
   }
 
-  private async generateExcel(messages: any[], baseName: string) {
+  private async generateExcel(
+    messages: any[],
+    baseName: string,
+  ): Promise<string> {
     const excelPath = path.join(
       this.excelDir,
       `${path.parse(baseName).name}.xlsx`,
