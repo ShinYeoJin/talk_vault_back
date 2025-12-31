@@ -19,14 +19,12 @@ export class History {
   @Column()
   savedFileName: string;
 
-  @Column()
-  filePath: string;
 
   @Column({ nullable: true })
-  pdfPath: string;
+  pdfUrl: string;
 
   @Column({ nullable: true })
-  excelPath: string;
+  excelUrl: string;
 
   @Column()
   fileSize: number;
