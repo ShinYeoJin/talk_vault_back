@@ -4,14 +4,14 @@ import { Repository } from 'typeorm';
 import { History } from '../entities/history.entity';
 import { createClient } from '@supabase/supabase-js';
 import * as PDFDocument from 'pdfkit';
-import ExcelJS from 'exceljs';
+import * as ExcelJS from 'exceljs';
 import { v4 as uuid } from 'uuid';
 
 @Injectable()
 export class UploadService {
   private supabase = createClient(
     process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!, // 🔥 서버 전용
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 
   constructor(
@@ -21,16 +21,14 @@ export class UploadService {
 
   async processFile(file: any, userId: string): Promise<History> {
     try {
-      /** 1️⃣ TXT 파싱 */
-      const messages = this.parseKakaoTalkTxt(
-        file.buffer.toString('utf-8'),
-      );
+      // 1️⃣ TXT 파싱
+      const messages = this.parseKakaoTalkTxt(file.buffer.toString('utf-8'));
 
-      /** 2️⃣ PDF / Excel Buffer 생성 */
+      // 2️⃣ PDF / Excel Buffer 생성
       const pdfBuffer = await this.generatePDFBuffer(messages);
       const excelBuffer = await this.generateExcelBuffer(messages);
 
-      /** 3️⃣ Supabase 업로드 */
+      // 3️⃣ Supabase 업로드
       const fileId = uuid();
       const pdfPath = `${userId}/${fileId}.pdf`;
       const excelPath = `${userId}/${fileId}.xlsx`;
@@ -42,11 +40,11 @@ export class UploadService {
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
 
-      /** 4️⃣ Public URL */
+      // 4️⃣ Public URL
       const pdfUrl = this.getPublicUrl(pdfPath);
       const excelUrl = this.getPublicUrl(excelPath);
 
-      /** 5️⃣ DB 저장 */
+      // 5️⃣ DB 저장
       const history = this.historyRepository.create({
         originalFileName: file.originalname,
         savedFileName: fileId,
@@ -59,14 +57,14 @@ export class UploadService {
       return await this.historyRepository.save(history);
     } catch (err) {
       console.error('UPLOAD ERROR:', err);
+      console.error(err.stack);
       throw new InternalServerErrorException(
         '파일 업로드 처리 중 오류가 발생했습니다.',
       );
     }
   }
 
-  /* ===================== TXT PARSER ===================== */
-
+  /** ===================== TXT PARSER ===================== */
   private parseKakaoTalkTxt(content: string) {
     const lines = content.split('\n');
     const messages = [];
@@ -93,10 +91,7 @@ export class UploadService {
             ? '12'
             : String(Number(h) + 12).padStart(2, '0');
 
-        currentDate = `${y}-${m.padStart(2, '0')}-${d.padStart(
-          2,
-          '0',
-        )} ${hour}:${min}`;
+        currentDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')} ${hour}:${min}`;
         continue;
       }
 
@@ -116,34 +111,33 @@ export class UploadService {
     return messages;
   }
 
-  /* ===================== PDF ===================== */
-
+  /** ===================== PDF ===================== */
   private generatePDFBuffer(messages: any[]): Promise<Buffer> {
-    return new Promise((resolve) => {
-      const doc = new PDFDocument({ margin: 40 });
-      const buffers: Buffer[] = [];
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ margin: 40 });
+        const buffers: Buffer[] = [];
 
-      doc.on('data', (d) => buffers.push(d));
-      doc.on('end', () => resolve(Buffer.concat(buffers)));
+        doc.on('data', (d) => buffers.push(d));
+        doc.on('end', () => resolve(Buffer.concat(buffers)));
 
-      doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
-      doc.moveDown();
-
-      for (const msg of messages) {
-        doc.fontSize(10).fillColor('gray').text(msg.date);
-        doc
-          .fontSize(12)
-          .fillColor('black')
-          .text(`${msg.sender}: ${msg.message}`);
+        doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
         doc.moveDown();
-      }
 
-      doc.end();
+        messages.forEach((msg) => {
+          doc.fontSize(10).fillColor('gray').text(msg.date);
+          doc.fontSize(12).fillColor('black').text(`${msg.sender}: ${msg.message}`);
+          doc.moveDown();
+        });
+
+        doc.end();
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
-  /* ===================== EXCEL ===================== */
-
+  /** ===================== EXCEL ===================== */
   private async generateExcelBuffer(messages: any[]): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('카카오톡 대화');
@@ -156,11 +150,11 @@ export class UploadService {
 
     messages.forEach((msg) => sheet.addRow(msg));
 
-    return Buffer.from(await workbook.xlsx.writeBuffer());
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
   }
 
-  /* ===================== SUPABASE ===================== */
-
+  /** ===================== SUPABASE ===================== */
   private async uploadToSupabase(
     path: string,
     buffer: Buffer,
@@ -168,19 +162,16 @@ export class UploadService {
   ) {
     const { error } = await this.supabase.storage
       .from('files')
-      .upload(path, buffer, {
-        contentType,
-        upsert: true,
-      });
+      .upload(path, buffer, { contentType, upsert: true });
 
-    if (error) throw error;
+    if (error) {
+      console.error('SUPABASE UPLOAD ERROR:', error);
+      throw error;
+    }
   }
 
   private getPublicUrl(path: string): string {
-    const { data } = this.supabase.storage
-      .from('files')
-      .getPublicUrl(path);
-
+    const { data } = this.supabase.storage.from('files').getPublicUrl(path);
     return data.publicUrl;
   }
 }
