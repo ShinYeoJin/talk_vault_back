@@ -195,11 +195,29 @@ export class UploadService {
 
   /** ================= 파일 처리 ================= */
   async processFile(file: any, userId: string): Promise<History> {
+    // 환경 변수 확인
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    console.log('🔍 환경 변수 확인:', {
+      hasSupabaseUrl: !!supabaseUrl,
+      hasSupabaseKey: !!supabaseKey,
+      supabaseUrlLength: supabaseUrl?.length || 0,
+      supabaseKeyLength: supabaseKey?.length || 0,
+    });
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('❌ Supabase 환경 변수가 설정되지 않았습니다.');
+      throw new InternalServerErrorException('서버 설정 오류: Supabase 환경 변수가 없습니다.');
+    }
+
     try {
       console.log('📤 파일 업로드 시작:', {
         fileName: file.originalname,
         fileSize: file.size,
         userId,
+        hasBuffer: !!file.buffer,
+        bufferSize: file.buffer?.length || 0,
       });
 
       // 1️⃣ 인코딩 변환 및 TXT 파싱
@@ -207,84 +225,140 @@ export class UploadService {
       try {
         // iconv-lite를 사용하여 CP949(EUC-KR) → UTF-8 변환 시도
         const iconv = require('iconv-lite');
+        if (!file.buffer) {
+          throw new Error('파일 버퍼가 없습니다.');
+        }
         content = iconv.decode(file.buffer, 'cp949');
         console.log('✅ CP949 인코딩으로 변환 성공');
       } catch (iconvErr) {
+        console.warn('⚠️ CP949 변환 실패:', iconvErr.message);
         // CP949 변환 실패 시 UTF-8로 시도
+        if (!file.buffer) {
+          throw new InternalServerErrorException('파일 버퍼가 없습니다.');
+        }
         content = file.buffer.toString('utf-8');
-        console.log('⚠️ CP949 변환 실패, UTF-8로 시도');
+        console.log('⚠️ UTF-8로 변환 시도');
+      }
+
+      if (!content || content.length === 0) {
+        throw new InternalServerErrorException('파일 내용이 비어있습니다.');
       }
 
       console.log('📄 파일 내용 샘플 (처음 200자):', content.substring(0, 200));
 
       // 2️⃣ TXT 파싱
-      const messages = this.parseKakaoTalkTxt(content);
-      console.log(`✅ 파싱 완료: ${messages.length}개의 메시지 추출`);
+      let messages: any[];
+      try {
+        messages = this.parseKakaoTalkTxt(content);
+        console.log(`✅ 파싱 완료: ${messages.length}개의 메시지 추출`);
+      } catch (parseErr) {
+        console.error('❌ 파싱 에러:', parseErr);
+        throw new InternalServerErrorException(`대화 내용을 파싱하지 못했습니다: ${parseErr.message}`);
+      }
 
-      if (messages.length === 0) {
-        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다.');
+      if (!messages || messages.length === 0) {
+        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다. (메시지가 0개)');
       }
 
       // 3️⃣ PDF / Excel Buffer 생성
-      console.log('📝 PDF 생성 시작...');
-      const pdfBuffer = await this.generatePDF(messages);
-      console.log(`✅ PDF 생성 완료: ${pdfBuffer.length} bytes`);
+      let pdfBuffer: Buffer;
+      let excelBuffer: Buffer;
 
-      console.log('📊 Excel 생성 시작...');
-      const excelBuffer = await this.generateExcel(messages);
-      console.log(`✅ Excel 생성 완료: ${excelBuffer.length} bytes`);
+      try {
+        console.log('📝 PDF 생성 시작...');
+        pdfBuffer = await this.generatePDF(messages);
+        console.log(`✅ PDF 생성 완료: ${pdfBuffer.length} bytes`);
+      } catch (pdfErr) {
+        console.error('❌ PDF 생성 에러:', pdfErr);
+        throw new InternalServerErrorException(`PDF 생성 실패: ${pdfErr.message}`);
+      }
+
+      try {
+        console.log('📊 Excel 생성 시작...');
+        excelBuffer = await this.generateExcel(messages);
+        console.log(`✅ Excel 생성 완료: ${excelBuffer.length} bytes`);
+      } catch (excelErr) {
+        console.error('❌ Excel 생성 에러:', excelErr);
+        throw new InternalServerErrorException(`Excel 생성 실패: ${excelErr.message}`);
+      }
 
       // 4️⃣ Supabase 업로드
       const fileId = uuid();
       const pdfPath = `${userId}/${fileId}.pdf`;
       const excelPath = `${userId}/${fileId}.xlsx`;
 
-      console.log('☁️ Supabase 업로드 시작...');
-      await this.uploadToSupabase(pdfPath, pdfBuffer, 'application/pdf');
-      console.log('✅ PDF 업로드 완료:', pdfPath);
+      try {
+        console.log('☁️ Supabase 업로드 시작...');
+        console.log('PDF 경로:', pdfPath);
+        await this.uploadToSupabase(pdfPath, pdfBuffer, 'application/pdf');
+        console.log('✅ PDF 업로드 완료:', pdfPath);
+      } catch (pdfUploadErr) {
+        console.error('❌ PDF 업로드 에러:', pdfUploadErr);
+        throw new InternalServerErrorException(`PDF 업로드 실패: ${pdfUploadErr.message}`);
+      }
 
-      await this.uploadToSupabase(
-        excelPath,
-        excelBuffer,
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      );
-      console.log('✅ Excel 업로드 완료:', excelPath);
+      try {
+        console.log('Excel 경로:', excelPath);
+        await this.uploadToSupabase(
+          excelPath,
+          excelBuffer,
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        );
+        console.log('✅ Excel 업로드 완료:', excelPath);
+      } catch (excelUploadErr) {
+        console.error('❌ Excel 업로드 에러:', excelUploadErr);
+        throw new InternalServerErrorException(`Excel 업로드 실패: ${excelUploadErr.message}`);
+      }
 
       // 5️⃣ Public URL
-      const pdfUrl = this.getPublicUrl(pdfPath);
-      const excelUrl = this.getPublicUrl(excelPath);
-      console.log('✅ Public URL 생성 완료');
+      let pdfUrl: string;
+      let excelUrl: string;
+      try {
+        pdfUrl = this.getPublicUrl(pdfPath);
+        excelUrl = this.getPublicUrl(excelPath);
+        console.log('✅ Public URL 생성 완료');
+        console.log('PDF URL:', pdfUrl);
+        console.log('Excel URL:', excelUrl);
+      } catch (urlErr) {
+        console.error('❌ URL 생성 에러:', urlErr);
+        throw new InternalServerErrorException(`Public URL 생성 실패: ${urlErr.message}`);
+      }
 
       // 6️⃣ DB 저장
-      const history = this.historyRepository.create({
-        originalFileName: file.originalname,
-        savedFileName: fileId,
-        pdfUrl,
-        excelUrl,
-        fileSize: file.size,
-        userId,
-      });
+      try {
+        const history = this.historyRepository.create({
+          originalFileName: file.originalname,
+          savedFileName: fileId,
+          pdfUrl,
+          excelUrl,
+          fileSize: file.size,
+          userId,
+        });
 
-      const savedHistory = await this.historyRepository.save(history);
-      console.log('✅ DB 저장 완료:', savedHistory.id);
+        const savedHistory = await this.historyRepository.save(history);
+        console.log('✅ DB 저장 완료:', savedHistory.id);
 
-      return savedHistory;
-    } catch (err) {
-      console.error('❌ UPLOAD ERROR:', err);
-      console.error('에러 타입:', err.constructor.name);
-      console.error('에러 메시지:', err.message);
-      console.error('에러 스택:', err.stack);
-      
-      // 더 구체적인 에러 메시지
-      if (err.message && err.message.includes('파싱')) {
-        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다.');
-      } else if (err.message && err.message.includes('Supabase') || err.message.includes('SUPABASE')) {
-        throw new InternalServerErrorException('파일 저장 중 오류가 발생했습니다. (Supabase)');
-      } else {
-        throw new InternalServerErrorException(
-          `파일 업로드 처리 중 오류가 발생했습니다: ${err.message || '알 수 없는 오류'}`,
-        );
+        return savedHistory;
+      } catch (dbErr) {
+        console.error('❌ DB 저장 에러:', dbErr);
+        throw new InternalServerErrorException(`DB 저장 실패: ${dbErr.message}`);
       }
+    } catch (err) {
+      console.error('❌ [UPLOAD SERVICE] 전체 에러:', {
+        errorType: err.constructor.name,
+        message: err.message,
+        stack: err.stack?.substring(0, 500), // 스택은 일부만
+      });
+      
+      // 이미 InternalServerErrorException인 경우 그대로 throw
+      if (err instanceof InternalServerErrorException) {
+        throw err;
+      }
+
+      // 알 수 없는 에러인 경우
+      throw new InternalServerErrorException(
+        `파일 업로드 처리 중 오류가 발생했습니다: ${err.message || '알 수 없는 오류'}`,
+      );
     }
   }
 
@@ -294,13 +368,30 @@ export class UploadService {
     buffer: Buffer,
     contentType: string,
   ) {
-    const { error } = await this.supabase.storage
-      .from('files')
-      .upload(path, buffer, { contentType, upsert: false });
+    try {
+      console.log('📤 Supabase 업로드 시도:', {
+        path,
+        bufferSize: buffer.length,
+        contentType,
+      });
 
-    if (error) {
-      console.error('SUPABASE UPLOAD ERROR:', error);
-      throw error;
+      const { data, error } = await this.supabase.storage
+        .from('files')
+        .upload(path, buffer, { contentType, upsert: false });
+
+      if (error) {
+        console.error('❌ SUPABASE UPLOAD ERROR:', {
+          message: error.message,
+          name: error.name,
+          error: JSON.stringify(error),
+        });
+        throw new Error(`Supabase 업로드 실패: ${error.message}`);
+      }
+
+      console.log('✅ Supabase 업로드 성공:', data);
+    } catch (err) {
+      console.error('❌ Supabase 업로드 예외:', err);
+      throw err;
     }
   }
 
