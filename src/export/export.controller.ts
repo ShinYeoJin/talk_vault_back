@@ -55,8 +55,19 @@ export class ExportController {
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${safeFileName}`);
       res.send(pdfBuffer);
     } catch (err) {
-      console.error('PDF Export Error:', err);
-      throw new BadRequestException('대화 내용을 파싱하지 못했습니다.');
+      console.error('❌ PDF Export Error:', err);
+      console.error('에러 타입:', err.constructor.name);
+      console.error('에러 메시지:', err.message);
+      console.error('에러 스택:', err.stack);
+      
+      // 더 구체적인 에러 메시지
+      if (err.message && err.message.includes('파싱')) {
+        throw new BadRequestException('대화 내용을 파싱하지 못했습니다.');
+      } else if (err.message && err.message.includes('폰트')) {
+        throw new BadRequestException('PDF 생성 중 폰트 오류가 발생했습니다.');
+      } else {
+        throw new BadRequestException(`PDF 생성 실패: ${err.message || '알 수 없는 오류'}`);
+      }
     }
   }
 
@@ -100,8 +111,17 @@ export class ExportController {
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${safeFileName}`);
       res.send(excelBuffer);
     } catch (err) {
-      console.error('Excel Export Error:', err);
-      throw new BadRequestException('대화 내용을 파싱하지 못했습니다.');
+      console.error('❌ Excel Export Error:', err);
+      console.error('에러 타입:', err.constructor.name);
+      console.error('에러 메시지:', err.message);
+      console.error('에러 스택:', err.stack);
+      
+      // 더 구체적인 에러 메시지
+      if (err.message && err.message.includes('파싱')) {
+        throw new BadRequestException('대화 내용을 파싱하지 못했습니다.');
+      } else {
+        throw new BadRequestException(`Excel 생성 실패: ${err.message || '알 수 없는 오류'}`);
+      }
     }
   }
 }

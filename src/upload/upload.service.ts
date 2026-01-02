@@ -29,23 +29,71 @@ export class UploadService {
 
         doc.on('data', (d) => buffers.push(d));
         doc.on('end', () => resolve(Buffer.concat(buffers)));
+        doc.on('error', (err) => {
+          console.error('PDF 생성 중 에러 발생:', err);
+          reject(err);
+        });
 
-        // 한글 폰트 적용
-        const fontPath = path.join(__dirname, '../../assets/fonts/NanumGothic-Regular.ttf');
-        doc.registerFont('NanumGothic', fontPath);
-        doc.font('NanumGothic');
+        // 한글 폰트 등록 (배포 환경 대응)
+        let fontRegistered = false;
+        const fs = require('fs');
+        const fontPaths = [
+          // 배포 환경 (dist 폴더 기준)
+          path.join(process.cwd(), 'assets', 'fonts', 'NanumGothic.ttf'),
+          path.join(process.cwd(), 'assets', 'fonts', 'NanumGothic-Regular.ttf'),
+          // 로컬 개발 환경
+          path.join(__dirname, '..', '..', 'assets', 'fonts', 'NanumGothic.ttf'),
+          path.join(__dirname, '..', '..', 'assets', 'fonts', 'NanumGothic-Regular.ttf'),
+        ];
 
+        for (const fontPath of fontPaths) {
+          try {
+            if (fs.existsSync(fontPath)) {
+              doc.registerFont('NanumGothic', fontPath);
+              doc.font('NanumGothic');
+              fontRegistered = true;
+              console.log('✅ 폰트 등록 성공:', fontPath);
+              break;
+            }
+          } catch (fontErr) {
+            console.warn('⚠️ 폰트 경로 시도 실패:', fontPath, fontErr.message);
+          }
+        }
+
+        if (!fontRegistered) {
+          console.warn('⚠️ 한글 폰트를 찾을 수 없습니다. 기본 폰트를 사용합니다. (한글이 깨질 수 있음)');
+        }
+
+        // 제목
         doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
         doc.moveDown();
 
-        messages.forEach((msg) => {
-          doc.fontSize(10).fillColor('gray').text(msg.date);
-          doc.fontSize(12).fillColor('black').text(`${msg.sender}: ${msg.message}`);
-          doc.moveDown();
+        // 메시지가 없는 경우 체크
+        if (!messages || messages.length === 0) {
+          console.warn('⚠️ 파싱된 메시지가 없습니다.');
+          doc.fontSize(12).text('대화 내용이 없습니다.', { align: 'center' });
+          doc.end();
+          return;
+        }
+
+        console.log(`📝 PDF 생성 중: ${messages.length}개의 메시지 처리`);
+
+        // 메시지 출력
+        messages.forEach((msg, index) => {
+          try {
+            doc.fontSize(10).fillColor('gray').text(msg.date || '날짜 없음');
+            const messageText = `${msg.sender || '발신자 없음'}: ${msg.message || '메시지 없음'}`;
+            doc.fontSize(12).fillColor('black').text(messageText);
+            doc.moveDown();
+          } catch (msgErr) {
+            console.error(`메시지 ${index} 처리 중 에러:`, msgErr);
+          }
         });
 
         doc.end();
       } catch (err) {
+        console.error('PDF 생성 실패:', err);
+        console.error('에러 스택:', err.stack);
         reject(err);
       }
     });
@@ -81,22 +129,42 @@ export class UploadService {
 
   /** ================= TXT 파싱 ================= */
   private parseKakaoTalkTxt(content: string) {
-    const lines = content.split('\n');
-    const messages = [];
+    const lines = content.split(/\r?\n/);
+    const messages: { date: string; sender: string; message: string }[] = [];
 
-    const datePattern =
-      /^(\d{4})\.\s?(\d{1,2})\.\s?(\d{1,2})\.\s?(오전|오후)\s?(\d{1,2}):(\d{2})/;
-    const messagePattern = /^(.+?),\s*(.+)$/;
+    // 날짜 구분선 패턴: "--------------- 2025년 12월 29일 월요일 ---------------"
+    const dateDividerPattern = /^-+\s*(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/;
+
+    // 메시지 패턴: "[이름] [오전/오후 시간:분] 메시지"
+    // 예: "[IT 신여진님] [오전 11:32] ."
+    const messagePattern = /^\[(.+?)\]\s*\[(오전|오후)\s*(\d{1,2}):(\d{2})\]\s*(.+)$/;
 
     let currentDate: string | null = null;
+    let currentYear: string | null = null;
+    let currentMonth: string | null = null;
+    let currentDay: string | null = null;
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      const dateMatch = trimmed.match(datePattern);
-      if (dateMatch) {
-        const [, y, m, d, ampm, h, min] = dateMatch;
+      // 날짜 구분선 확인
+      const dateDividerMatch = trimmed.match(dateDividerPattern);
+      if (dateDividerMatch) {
+        const [, y, m, d] = dateDividerMatch;
+        currentYear = y;
+        currentMonth = m.padStart(2, '0');
+        currentDay = d.padStart(2, '0');
+        currentDate = `${y}-${currentMonth}-${currentDay}`;
+        continue;
+      }
+
+      // 메시지 라인 확인: [이름] [오전/오후 시간:분] 메시지
+      const msgMatch = trimmed.match(messagePattern);
+      if (msgMatch && currentDate) {
+        const [, sender, ampm, h, min, message] = msgMatch;
+
+        // 시간 변환
         const hour =
           ampm === '오전'
             ? h === '12'
@@ -106,20 +174,19 @@ export class UploadService {
             ? '12'
             : String(Number(h) + 12).padStart(2, '0');
 
-        currentDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')} ${hour}:${min}`;
-        continue;
-      }
+        const fullDateTime = `${currentDate} ${hour}:${min}`;
 
-      const msgMatch = trimmed.match(messagePattern);
-      if (msgMatch && currentDate) {
-        const [, sender, message] = msgMatch;
         messages.push({
-          date: currentDate,
+          date: fullDateTime,
           sender: sender.trim(),
           message: message.trim(),
         });
-      } else if (currentDate && messages.length > 0) {
-        messages[messages.length - 1].message += '\n' + trimmed;
+      } else if (messages.length > 0 && currentDate) {
+        // 이전 메시지에 이어서 붙이기 (여러 줄 메시지)
+        // 단, 새로운 메시지 패턴이 아닌 경우에만
+        if (!trimmed.match(/^\[.+\]\s*\[(오전|오후)/)) {
+          messages[messages.length - 1].message += '\n' + trimmed;
+        }
       }
     }
 
@@ -129,30 +196,66 @@ export class UploadService {
   /** ================= 파일 처리 ================= */
   async processFile(file: any, userId: string): Promise<History> {
     try {
-      // 1️⃣ TXT 파싱
-      const messages = this.parseKakaoTalkTxt(file.buffer.toString('utf-8'));
+      console.log('📤 파일 업로드 시작:', {
+        fileName: file.originalname,
+        fileSize: file.size,
+        userId,
+      });
 
-      // 2️⃣ PDF / Excel Buffer 생성
+      // 1️⃣ 인코딩 변환 및 TXT 파싱
+      let content: string;
+      try {
+        // iconv-lite를 사용하여 CP949(EUC-KR) → UTF-8 변환 시도
+        const iconv = require('iconv-lite');
+        content = iconv.decode(file.buffer, 'cp949');
+        console.log('✅ CP949 인코딩으로 변환 성공');
+      } catch (iconvErr) {
+        // CP949 변환 실패 시 UTF-8로 시도
+        content = file.buffer.toString('utf-8');
+        console.log('⚠️ CP949 변환 실패, UTF-8로 시도');
+      }
+
+      console.log('📄 파일 내용 샘플 (처음 200자):', content.substring(0, 200));
+
+      // 2️⃣ TXT 파싱
+      const messages = this.parseKakaoTalkTxt(content);
+      console.log(`✅ 파싱 완료: ${messages.length}개의 메시지 추출`);
+
+      if (messages.length === 0) {
+        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다.');
+      }
+
+      // 3️⃣ PDF / Excel Buffer 생성
+      console.log('📝 PDF 생성 시작...');
       const pdfBuffer = await this.generatePDF(messages);
-      const excelBuffer = await this.generateExcel(messages);
+      console.log(`✅ PDF 생성 완료: ${pdfBuffer.length} bytes`);
 
-      // 3️⃣ Supabase 업로드
+      console.log('📊 Excel 생성 시작...');
+      const excelBuffer = await this.generateExcel(messages);
+      console.log(`✅ Excel 생성 완료: ${excelBuffer.length} bytes`);
+
+      // 4️⃣ Supabase 업로드
       const fileId = uuid();
       const pdfPath = `${userId}/${fileId}.pdf`;
       const excelPath = `${userId}/${fileId}.xlsx`;
 
+      console.log('☁️ Supabase 업로드 시작...');
       await this.uploadToSupabase(pdfPath, pdfBuffer, 'application/pdf');
+      console.log('✅ PDF 업로드 완료:', pdfPath);
+
       await this.uploadToSupabase(
         excelPath,
         excelBuffer,
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       );
+      console.log('✅ Excel 업로드 완료:', excelPath);
 
-      // 4️⃣ Public URL
+      // 5️⃣ Public URL
       const pdfUrl = this.getPublicUrl(pdfPath);
       const excelUrl = this.getPublicUrl(excelPath);
+      console.log('✅ Public URL 생성 완료');
 
-      // 5️⃣ DB 저장
+      // 6️⃣ DB 저장
       const history = this.historyRepository.create({
         originalFileName: file.originalname,
         savedFileName: fileId,
@@ -162,13 +265,26 @@ export class UploadService {
         userId,
       });
 
-      return await this.historyRepository.save(history);
+      const savedHistory = await this.historyRepository.save(history);
+      console.log('✅ DB 저장 완료:', savedHistory.id);
+
+      return savedHistory;
     } catch (err) {
-      console.error('UPLOAD ERROR:', err);
-      console.error(err.stack);
-      throw new InternalServerErrorException(
-        '파일 업로드 처리 중 오류가 발생했습니다.',
-      );
+      console.error('❌ UPLOAD ERROR:', err);
+      console.error('에러 타입:', err.constructor.name);
+      console.error('에러 메시지:', err.message);
+      console.error('에러 스택:', err.stack);
+      
+      // 더 구체적인 에러 메시지
+      if (err.message && err.message.includes('파싱')) {
+        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다.');
+      } else if (err.message && err.message.includes('Supabase') || err.message.includes('SUPABASE')) {
+        throw new InternalServerErrorException('파일 저장 중 오류가 발생했습니다. (Supabase)');
+      } else {
+        throw new InternalServerErrorException(
+          `파일 업로드 처리 중 오류가 발생했습니다: ${err.message || '알 수 없는 오류'}`,
+        );
+      }
     }
   }
 

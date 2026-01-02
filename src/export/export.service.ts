@@ -14,23 +14,73 @@ export class ExportService {
 
         doc.on('data', (d) => buffers.push(d));
         doc.on('end', () => resolve(Buffer.concat(buffers)));
+        doc.on('error', (err) => {
+          console.error('PDF 생성 중 에러 발생:', err);
+          reject(err);
+        });
 
-        // 한글 폰트 등록
-        const fontPath = path.join(process.cwd(), 'assets', 'fonts', 'NanumGothic.ttf');
-        doc.registerFont('NanumGothic', fontPath);
-        doc.font('NanumGothic');
+        // 한글 폰트 등록 (배포 환경 대응)
+        let fontRegistered = false;
+        const fontPaths = [
+          // 배포 환경 (dist 폴더 기준)
+          path.join(process.cwd(), 'assets', 'fonts', 'NanumGothic.ttf'),
+          path.join(process.cwd(), 'assets', 'fonts', 'NanumGothic-Regular.ttf'),
+          // 로컬 개발 환경
+          path.join(__dirname, '..', '..', 'assets', 'fonts', 'NanumGothic.ttf'),
+          path.join(__dirname, '..', '..', 'assets', 'fonts', 'NanumGothic-Regular.ttf'),
+        ];
 
+        for (const fontPath of fontPaths) {
+          try {
+            const fs = require('fs');
+            if (fs.existsSync(fontPath)) {
+              doc.registerFont('NanumGothic', fontPath);
+              doc.font('NanumGothic');
+              fontRegistered = true;
+              console.log('✅ 폰트 등록 성공:', fontPath);
+              break;
+            }
+          } catch (fontErr) {
+            console.warn('⚠️ 폰트 경로 시도 실패:', fontPath, fontErr.message);
+          }
+        }
+
+        if (!fontRegistered) {
+          console.warn('⚠️ 한글 폰트를 찾을 수 없습니다. 기본 폰트를 사용합니다. (한글이 깨질 수 있음)');
+          console.warn('폰트 파일 경로:', fontPaths);
+        }
+
+        // 제목
         doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
         doc.moveDown();
 
-        messages.forEach((msg) => {
-          doc.fontSize(10).fillColor('gray').text(msg.date);
-          doc.fontSize(12).fillColor('black').text(`${msg.sender}: ${msg.message}`);
-          doc.moveDown();
+        // 메시지가 없는 경우 체크
+        if (!messages || messages.length === 0) {
+          console.warn('⚠️ 파싱된 메시지가 없습니다.');
+          doc.fontSize(12).text('대화 내용이 없습니다.', { align: 'center' });
+          doc.end();
+          return;
+        }
+
+        console.log(`📝 PDF 생성 중: ${messages.length}개의 메시지 처리`);
+
+        // 메시지 출력
+        messages.forEach((msg, index) => {
+          try {
+            doc.fontSize(10).fillColor('gray').text(msg.date || '날짜 없음');
+            const messageText = `${msg.sender || '발신자 없음'}: ${msg.message || '메시지 없음'}`;
+            doc.fontSize(12).fillColor('black').text(messageText);
+            doc.moveDown();
+          } catch (msgErr) {
+            console.error(`메시지 ${index} 처리 중 에러:`, msgErr);
+            console.error('메시지 데이터:', msg);
+          }
         });
 
         doc.end();
       } catch (err) {
+        console.error('PDF 생성 실패:', err);
+        console.error('에러 스택:', err.stack);
         reject(err);
       }
     });
