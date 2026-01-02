@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { User } from '../entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { supabase } from '@/common/supabase/supabase.client';
+import { supabase } from '../common/supabase/supabase.client';
 
 @Injectable()
 export class AuthService {
