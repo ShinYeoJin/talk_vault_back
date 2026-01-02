@@ -162,7 +162,7 @@ export class UploadService {
   ) {
     const { error } = await this.supabase.storage
       .from('files')
-      .upload(path, buffer, { contentType, upsert: true });
+      .upload(path, buffer, { contentType, upsert: false });
 
     if (error) {
       console.error('SUPABASE UPLOAD ERROR:', error);
