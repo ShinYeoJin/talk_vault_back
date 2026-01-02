@@ -42,17 +42,19 @@ async function bootstrap() {
   
   // 최소한 하나의 origin이 있어야 함 (없으면 모든 origin 허용)
   const allowedOrigins = corsOrigins.length > 0 ? corsOrigins : true;
+  console.log('✅ CORS Allowed Origins:', allowedOrigins);
 
   app.enableCors({
     origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Set-Cookie'],
+    exposedHeaders: ['Authorization', 'Set-Cookie'],
   });
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
+  console.log(`🚀 Server running on port ${port}`);
 }
 bootstrap();
 
