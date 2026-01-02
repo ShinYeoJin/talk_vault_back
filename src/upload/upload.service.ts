@@ -3,9 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { History } from '../entities/history.entity';
 import { createClient } from '@supabase/supabase-js';
-import * as PDFDocument from 'pdfkit';
 import * as ExcelJS from 'exceljs';
 import { v4 as uuid } from 'uuid';
+import * as path from 'path';
+import * as PDFDocument from 'pdfkit';
 
 @Injectable()
 export class UploadService {
@@ -19,52 +20,66 @@ export class UploadService {
     private readonly historyRepository: Repository<History>,
   ) {}
 
-  async processFile(file: any, userId: string): Promise<History> {
+  /** ================= PDF ================= */
+  async generatePDF(messages: any[]): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ margin: 40 });
+        const buffers: Buffer[] = [];
+
+        doc.on('data', (d) => buffers.push(d));
+        doc.on('end', () => resolve(Buffer.concat(buffers)));
+
+        // 한글 폰트 적용
+        const fontPath = path.join(__dirname, '../../assets/fonts/NanumGothic-Regular.ttf');
+        doc.registerFont('NanumGothic', fontPath);
+        doc.font('NanumGothic');
+
+        doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
+        doc.moveDown();
+
+        messages.forEach((msg) => {
+          doc.fontSize(10).fillColor('gray').text(msg.date);
+          doc.fontSize(12).fillColor('black').text(`${msg.sender}: ${msg.message}`);
+          doc.moveDown();
+        });
+
+        doc.end();
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /** ================= EXCEL ================= */
+  async generateExcel(messages: any[]): Promise<Buffer> {
     try {
-      // 1️⃣ TXT 파싱
-      const messages = this.parseKakaoTalkTxt(file.buffer.toString('utf-8'));
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('카카오톡 대화');
 
-      // 2️⃣ PDF / Excel Buffer 생성
-      const pdfBuffer = await this.generatePDFBuffer(messages);
-      const excelBuffer = await this.generateExcelBuffer(messages);
+      sheet.columns = [
+        { header: '날짜', key: 'date', width: 20 },
+        { header: '발신자', key: 'sender', width: 15 },
+        { header: '메시지', key: 'message', width: 50 },
+      ];
 
-      // 3️⃣ Supabase 업로드
-      const fileId = uuid();
-      const pdfPath = `${userId}/${fileId}.pdf`;
-      const excelPath = `${userId}/${fileId}.xlsx`;
-
-      await this.uploadToSupabase(pdfPath, pdfBuffer, 'application/pdf');
-      await this.uploadToSupabase(
-        excelPath,
-        excelBuffer,
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      messages.forEach((msg) =>
+        sheet.addRow({
+          date: msg.date || '',
+          sender: msg.sender || '',
+          message: msg.message || '',
+        }),
       );
 
-      // 4️⃣ Public URL
-      const pdfUrl = this.getPublicUrl(pdfPath);
-      const excelUrl = this.getPublicUrl(excelPath);
-
-      // 5️⃣ DB 저장
-      const history = this.historyRepository.create({
-        originalFileName: file.originalname,
-        savedFileName: fileId,
-        pdfUrl,
-        excelUrl,
-        fileSize: file.size,
-        userId,
-      });
-
-      return await this.historyRepository.save(history);
+      const buffer = await workbook.xlsx.writeBuffer();
+      return Buffer.from(buffer);
     } catch (err) {
-      console.error('UPLOAD ERROR:', err);
-      console.error(err.stack);
-      throw new InternalServerErrorException(
-        '파일 업로드 처리 중 오류가 발생했습니다.',
-      );
+      console.error('Excel generation error:', err);
+      throw new InternalServerErrorException('Excel 생성 실패');
     }
   }
 
-  /** ===================== TXT PARSER ===================== */
+  /** ================= TXT 파싱 ================= */
   private parseKakaoTalkTxt(content: string) {
     const lines = content.split('\n');
     const messages = [];
@@ -111,50 +126,53 @@ export class UploadService {
     return messages;
   }
 
-  /** ===================== PDF ===================== */
-  private generatePDFBuffer(messages: any[]): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      try {
-        const doc = new PDFDocument({ margin: 40 });
-        const buffers: Buffer[] = [];
+  /** ================= 파일 처리 ================= */
+  async processFile(file: any, userId: string): Promise<History> {
+    try {
+      // 1️⃣ TXT 파싱
+      const messages = this.parseKakaoTalkTxt(file.buffer.toString('utf-8'));
 
-        doc.on('data', (d) => buffers.push(d));
-        doc.on('end', () => resolve(Buffer.concat(buffers)));
+      // 2️⃣ PDF / Excel Buffer 생성
+      const pdfBuffer = await this.generatePDF(messages);
+      const excelBuffer = await this.generateExcel(messages);
 
-        doc.fontSize(16).text('카카오톡 대화 내역', { align: 'center' });
-        doc.moveDown();
+      // 3️⃣ Supabase 업로드
+      const fileId = uuid();
+      const pdfPath = `${userId}/${fileId}.pdf`;
+      const excelPath = `${userId}/${fileId}.xlsx`;
 
-        messages.forEach((msg) => {
-          doc.fontSize(10).fillColor('gray').text(msg.date);
-          doc.fontSize(12).fillColor('black').text(`${msg.sender}: ${msg.message}`);
-          doc.moveDown();
-        });
+      await this.uploadToSupabase(pdfPath, pdfBuffer, 'application/pdf');
+      await this.uploadToSupabase(
+        excelPath,
+        excelBuffer,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
 
-        doc.end();
-      } catch (err) {
-        reject(err);
-      }
-    });
+      // 4️⃣ Public URL
+      const pdfUrl = this.getPublicUrl(pdfPath);
+      const excelUrl = this.getPublicUrl(excelPath);
+
+      // 5️⃣ DB 저장
+      const history = this.historyRepository.create({
+        originalFileName: file.originalname,
+        savedFileName: fileId,
+        pdfUrl,
+        excelUrl,
+        fileSize: file.size,
+        userId,
+      });
+
+      return await this.historyRepository.save(history);
+    } catch (err) {
+      console.error('UPLOAD ERROR:', err);
+      console.error(err.stack);
+      throw new InternalServerErrorException(
+        '파일 업로드 처리 중 오류가 발생했습니다.',
+      );
+    }
   }
 
-  /** ===================== EXCEL ===================== */
-  private async generateExcelBuffer(messages: any[]): Promise<Buffer> {
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('카카오톡 대화');
-
-    sheet.columns = [
-      { header: '날짜', key: 'date', width: 20 },
-      { header: '발신자', key: 'sender', width: 15 },
-      { header: '메시지', key: 'message', width: 50 },
-    ];
-
-    messages.forEach((msg) => sheet.addRow(msg));
-
-    const buffer = await workbook.xlsx.writeBuffer();
-    return Buffer.from(buffer);
-  }
-
-  /** ===================== SUPABASE ===================== */
+  /** ================= SUPABASE ================= */
   private async uploadToSupabase(
     path: string,
     buffer: Buffer,

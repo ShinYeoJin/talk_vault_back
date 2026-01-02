@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { UserModule } from './user/user.module';
 import { UploadModule } from './upload/upload.module';
 import { HistoryModule } from './history/history.module';
+import { ExportModule } from './export/export.module';
 import { TypeOrmConfigService } from './config/typeorm.config';
 import { Upload } from './entities/upload.entity';
 
@@ -35,6 +36,7 @@ import { Upload } from './entities/upload.entity';
     UserModule,
     UploadModule,
     HistoryModule,
+    ExportModule,
   ],
   controllers: [AppController],
   providers: [AppService],
