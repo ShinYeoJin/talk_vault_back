@@ -143,25 +143,37 @@ export class UploadService {
     let currentYear: string | null = null;
     let currentMonth: string | null = null;
     let currentDay: string | null = null;
+    
+    let dateLines = 0;
+    let messageLines = 0;
+    let parsedLines = 0;
 
-    for (const line of lines) {
+    console.log('🔍 파싱 시작 - 총 라인 수:', lines.length);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const trimmed = line.trim();
       if (!trimmed) continue;
+
+      parsedLines++;
 
       // 날짜 구분선 확인
       const dateDividerMatch = trimmed.match(dateDividerPattern);
       if (dateDividerMatch) {
+        dateLines++;
         const [, y, m, d] = dateDividerMatch;
         currentYear = y;
         currentMonth = m.padStart(2, '0');
         currentDay = d.padStart(2, '0');
         currentDate = `${y}-${currentMonth}-${currentDay}`;
+        console.log(`📅 날짜 구분선 발견 (${i + 1}번째 줄):`, currentDate);
         continue;
       }
 
       // 메시지 라인 확인: [이름] [오전/오후 시간:분] 메시지
       const msgMatch = trimmed.match(messagePattern);
       if (msgMatch && currentDate) {
+        messageLines++;
         const [, sender, ampm, h, min, message] = msgMatch;
 
         // 시간 변환
@@ -188,6 +200,33 @@ export class UploadService {
           messages[messages.length - 1].message += '\n' + trimmed;
         }
       }
+    }
+
+    console.log('📊 파싱 결과:', {
+      총_라인수: lines.length,
+      처리된_라인수: parsedLines,
+      날짜_구분선: dateLines,
+      메시지_라인: messageLines,
+      파싱된_메시지수: messages.length,
+      첫_10줄: lines.slice(0, 10).map((l, i) => `${i + 1}: ${l.substring(0, 80)}`),
+    });
+
+    if (messages.length === 0) {
+      // 파싱 실패 시 상세 정보 출력
+      console.error('❌ 파싱 실패 - 파일 내용 샘플:');
+      console.error('첫 20줄:', lines.slice(0, 20).join('\n'));
+      console.error('날짜 패턴 매칭 시도한 라인들:');
+      lines.slice(0, 50).forEach((line, idx) => {
+        if (dateDividerPattern.test(line.trim())) {
+          console.error(`  ${idx + 1}: ${line.substring(0, 100)}`);
+        }
+      });
+      console.error('메시지 패턴 매칭 시도한 라인들:');
+      lines.slice(0, 50).forEach((line, idx) => {
+        if (messagePattern.test(line.trim())) {
+          console.error(`  ${idx + 1}: ${line.substring(0, 100)}`);
+        }
+      });
     }
 
     return messages;
@@ -222,29 +261,57 @@ export class UploadService {
 
       // 1️⃣ 인코딩 변환 및 TXT 파싱
       let content: string;
-      try {
-        // iconv-lite를 사용하여 CP949(EUC-KR) → UTF-8 변환 시도
-        const iconv = require('iconv-lite');
-        if (!file.buffer) {
-          throw new Error('파일 버퍼가 없습니다.');
+      if (!file.buffer) {
+        throw new InternalServerErrorException('파일 버퍼가 없습니다.');
+      }
+
+      // 여러 인코딩 방식 시도
+      const iconv = require('iconv-lite');
+      const encodings = ['cp949', 'euc-kr', 'utf-8', 'utf8'];
+      let encodingSuccess = false;
+
+      for (const encoding of encodings) {
+        try {
+          if (encoding === 'utf-8' || encoding === 'utf8') {
+            content = file.buffer.toString('utf-8');
+          } else {
+            content = iconv.decode(file.buffer, encoding);
+          }
+          
+          // 한글이 포함되어 있는지 확인 (파싱 가능한지 체크)
+          if (content && content.length > 0) {
+            // 날짜 구분선이나 메시지 패턴이 있는지 확인
+            const hasDatePattern = /-+\s*\d{4}년/.test(content);
+            const hasMessagePattern = /\[.+\]\s*\[(오전|오후)/.test(content);
+            
+            if (hasDatePattern || hasMessagePattern || content.includes('카카오톡')) {
+              console.log(`✅ ${encoding} 인코딩으로 변환 성공 (패턴 발견)`);
+              encodingSuccess = true;
+              break;
+            }
+          }
+        } catch (err) {
+          console.warn(`⚠️ ${encoding} 인코딩 변환 실패:`, err.message);
+          continue;
         }
-        content = iconv.decode(file.buffer, 'cp949');
-        console.log('✅ CP949 인코딩으로 변환 성공');
-      } catch (iconvErr) {
-        console.warn('⚠️ CP949 변환 실패:', iconvErr.message);
-        // CP949 변환 실패 시 UTF-8로 시도
-        if (!file.buffer) {
-          throw new InternalServerErrorException('파일 버퍼가 없습니다.');
+      }
+
+      if (!encodingSuccess || !content || content.length === 0) {
+        // 마지막으로 UTF-8 강제 시도
+        try {
+          content = file.buffer.toString('utf-8');
+          console.log('⚠️ UTF-8로 강제 변환');
+        } catch (err) {
+          throw new InternalServerErrorException('파일 인코딩 변환에 실패했습니다.');
         }
-        content = file.buffer.toString('utf-8');
-        console.log('⚠️ UTF-8로 변환 시도');
       }
 
       if (!content || content.length === 0) {
         throw new InternalServerErrorException('파일 내용이 비어있습니다.');
       }
 
-      console.log('📄 파일 내용 샘플 (처음 200자):', content.substring(0, 200));
+      console.log('📄 파일 내용 샘플 (처음 500자):', content.substring(0, 500));
+      console.log('📄 파일 총 길이:', content.length, '자');
 
       // 2️⃣ TXT 파싱
       let messages: any[];
@@ -253,11 +320,15 @@ export class UploadService {
         console.log(`✅ 파싱 완료: ${messages.length}개의 메시지 추출`);
       } catch (parseErr) {
         console.error('❌ 파싱 에러:', parseErr);
+        console.error('파싱 에러 스택:', parseErr.stack);
         throw new InternalServerErrorException(`대화 내용을 파싱하지 못했습니다: ${parseErr.message}`);
       }
 
       if (!messages || messages.length === 0) {
-        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다. (메시지가 0개)');
+        console.error('❌ 파싱 실패 - 메시지가 0개');
+        console.error('파일 내용 처음 1000자:', content.substring(0, 1000));
+        console.error('파일 내용 마지막 500자:', content.substring(Math.max(0, content.length - 500)));
+        throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다. (메시지가 0개) - 파일 형식을 확인해주세요.');
       }
 
       // 3️⃣ PDF / Excel Buffer 생성
