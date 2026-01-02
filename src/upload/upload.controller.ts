@@ -35,13 +35,7 @@ export class UploadController {
 
       const history = await this.uploadService.processFile(file, req.user.userId);
 
-      console.log('✅ [UPLOAD] 성공:', {
-        historyId: history.id,
-        pdfUrl: history.pdfUrl ? '있음' : '없음',
-        excelUrl: history.excelUrl ? '있음' : '없음',
-      });
-
-      return {
+      const response = {
         id: history.id,
         originalFileName: history.originalFileName,
         savedFileName: history.savedFileName,
@@ -50,6 +44,15 @@ export class UploadController {
         fileSize: history.fileSize,
         createdAt: history.createdAt,
       };
+
+      console.log('✅ [UPLOAD] 성공:', {
+        historyId: history.id,
+        pdfUrl: history.pdfUrl ? '있음' : '없음',
+        excelUrl: history.excelUrl ? '있음' : '없음',
+        responseKeys: Object.keys(response),
+      });
+
+      return response;
     } catch (err) {
       console.error('❌ [UPLOAD] Controller 에러:', {
         errorType: err.constructor.name,
