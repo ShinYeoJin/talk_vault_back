@@ -267,28 +267,46 @@ export class UploadService {
 
       // 여러 인코딩 방식 시도
       const iconv = require('iconv-lite');
-      const encodings = ['cp949', 'euc-kr', 'utf-8', 'utf8'];
-      let encodingSuccess = false;
+      const encodings = ['cp949', 'euc-kr', 'utf-8'];
+      let bestContent: string | null = null;
+      let bestScore = 0;
+      let bestEncoding = '';
 
       for (const encoding of encodings) {
         try {
-          if (encoding === 'utf-8' || encoding === 'utf8') {
-            content = file.buffer.toString('utf-8');
+          let decoded: string;
+          if (encoding === 'utf-8') {
+            decoded = file.buffer.toString('utf-8');
           } else {
-            content = iconv.decode(file.buffer, encoding);
+            decoded = iconv.decode(file.buffer, encoding);
           }
           
-          // 한글이 포함되어 있는지 확인 (파싱 가능한지 체크)
-          if (content && content.length > 0) {
-            // 날짜 구분선이나 메시지 패턴이 있는지 확인
-            const hasDatePattern = /-+\s*\d{4}년/.test(content);
-            const hasMessagePattern = /\[.+\]\s*\[(오전|오후)/.test(content);
-            
-            if (hasDatePattern || hasMessagePattern || content.includes('카카오톡')) {
-              console.log(`✅ ${encoding} 인코딩으로 변환 성공 (패턴 발견)`);
-              encodingSuccess = true;
-              break;
-            }
+          if (!decoded || decoded.length === 0) continue;
+
+          // 패턴 매칭 점수 계산
+          let score = 0;
+          const hasDatePattern = /-+\s*\d{4}년/.test(decoded);
+          const hasMessagePattern = /\[.+\]\s*\[(오전|오후)/.test(decoded);
+          const hasKakaoTalk = decoded.includes('카카오톡') || decoded.includes('KakaoTalk');
+          const hasKorean = /[가-힣]/.test(decoded);
+          
+          if (hasDatePattern) score += 10;
+          if (hasMessagePattern) score += 10;
+          if (hasKakaoTalk) score += 5;
+          if (hasKorean) score += 3;
+
+          console.log(`🔍 ${encoding} 인코딩 점수: ${score}`, {
+            hasDatePattern,
+            hasMessagePattern,
+            hasKakaoTalk,
+            hasKorean,
+            length: decoded.length,
+          });
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestContent = decoded;
+            bestEncoding = encoding;
           }
         } catch (err) {
           console.warn(`⚠️ ${encoding} 인코딩 변환 실패:`, err.message);
@@ -296,11 +314,15 @@ export class UploadService {
         }
       }
 
-      if (!encodingSuccess || !content || content.length === 0) {
-        // 마지막으로 UTF-8 강제 시도
+      // 최고 점수 인코딩 사용, 없으면 UTF-8 강제 시도
+      if (bestContent && bestScore > 0) {
+        content = bestContent;
+        console.log(`✅ 최종 인코딩: ${bestEncoding} (점수: ${bestScore})`);
+      } else {
+        // 모든 인코딩 실패 시 UTF-8 강제 시도
         try {
           content = file.buffer.toString('utf-8');
-          console.log('⚠️ UTF-8로 강제 변환');
+          console.log('⚠️ 모든 인코딩 실패, UTF-8로 강제 변환');
         } catch (err) {
           throw new InternalServerErrorException('파일 인코딩 변환에 실패했습니다.');
         }
@@ -310,8 +332,16 @@ export class UploadService {
         throw new InternalServerErrorException('파일 내용이 비어있습니다.');
       }
 
-      console.log('📄 파일 내용 샘플 (처음 500자):', content.substring(0, 500));
+      console.log('📄 파일 내용 샘플 (처음 1000자):');
+      console.log(content.substring(0, 1000));
       console.log('📄 파일 총 길이:', content.length, '자');
+      
+      // 바이너리 데이터인지 확인
+      const hasNullBytes = content.includes('\0');
+      const hasControlChars = /[\x00-\x08\x0B-\x0C\x0E-\x1F]/.test(content);
+      if (hasNullBytes || hasControlChars) {
+        console.warn('⚠️ 파일에 제어 문자나 null 바이트가 포함되어 있습니다.');
+      }
 
       // 2️⃣ TXT 파싱
       let messages: any[];
@@ -326,8 +356,31 @@ export class UploadService {
 
       if (!messages || messages.length === 0) {
         console.error('❌ 파싱 실패 - 메시지가 0개');
-        console.error('파일 내용 처음 1000자:', content.substring(0, 1000));
-        console.error('파일 내용 마지막 500자:', content.substring(Math.max(0, content.length - 500)));
+        console.error('=== 파일 내용 처음 2000자 ===');
+        console.error(content.substring(0, 2000));
+        console.error('=== 파일 내용 마지막 1000자 ===');
+        console.error(content.substring(Math.max(0, content.length - 1000)));
+        console.error('=== 모든 라인 (처음 50줄) ===');
+        const allLines = content.split(/\r?\n/);
+        allLines.slice(0, 50).forEach((line, idx) => {
+          console.error(`라인 ${idx + 1}:`, JSON.stringify(line.substring(0, 200)));
+        });
+        
+        // 패턴 매칭 시도 결과
+        const datePattern = /-+\s*\d{4}년/;
+        const msgPattern = /\[.+\]\s*\[(오전|오후)/;
+        const foundDateLines = allLines.filter((l, i) => datePattern.test(l.trim())).slice(0, 5);
+        const foundMsgLines = allLines.filter((l, i) => msgPattern.test(l.trim())).slice(0, 5);
+        
+        console.error('=== 날짜 패턴 매칭된 라인 (최대 5개) ===');
+        foundDateLines.forEach((line, idx) => {
+          console.error(`${idx + 1}:`, JSON.stringify(line.substring(0, 200)));
+        });
+        console.error('=== 메시지 패턴 매칭된 라인 (최대 5개) ===');
+        foundMsgLines.forEach((line, idx) => {
+          console.error(`${idx + 1}:`, JSON.stringify(line.substring(0, 200)));
+        });
+        
         throw new InternalServerErrorException('대화 내용을 파싱하지 못했습니다. (메시지가 0개) - 파일 형식을 확인해주세요.');
       }
 
